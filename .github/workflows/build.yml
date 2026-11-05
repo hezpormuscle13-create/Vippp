@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Chuot Thang</title>
+<style>
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;background:#0f1115;color:#fff;font-family:sans-serif;overflow:hidden}
+  body{display:flex;flex-direction:column}
+  #wrap{flex:1;position:relative;min-height:0}
+  canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:crosshair;display:block}
+  #state{position:absolute;top:10px;left:10px;padding:6px 12px;border-radius:999px;
+    font-size:14px;font-weight:bold;background:rgba(255,255,255,.12);pointer-events:none}
+  #state.lock{background:#16a34a}
+  #panel{background:#171a21;padding:12px;max-height:46%;overflow:auto;border-top:1px solid #2a2f3a}
+  .row{display:flex;align-items:center;gap:10px;margin:8px 0;font-size:14px}
+  .row label{flex:0 0 112px}
+  .row input[type=range]{flex:1;min-width:0}
+  .v{flex:0 0 44px;text-align:right;font-size:12px;opacity:.8}
+  .seg{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;flex:1}
+  .col{flex-direction:column;align-items:stretch}
+  .col label{flex:none}
+  #fold{width:100%;padding:9px;border:0;border-radius:10px;background:#272c38;color:#fff;font-size:14px;margin-bottom:6px}
+  .seg button,#clear{border:0;border-radius:10px;padding:10px 12px;font-size:14px;
+    background:#272c38;color:#fff}
+  .seg button.act{background:#fff;color:#111;font-weight:bold}
+  #on{width:100%;padding:12px;border:0;border-radius:12px;font-size:16px;font-weight:bold;
+    background:#16a34a;color:#fff;margin-bottom:6px}
+  #on.off{background:#ef4444}
+  #clear{width:100%;margin-top:6px}
+</style>
+</head>
+<body>
+
+<div id="wrap">
+  <canvas id="c"></canvas>
+  <div id="state">Kéo chuột để vẽ</div>
+</div>
+
+<div id="panel">
+  <button id="on">Giữ thẳng: BẬT</button>
+
+  <button id="fold">▼ Ẩn cài đặt</button>
+
+  <div id="opts">
+  <div class="row col"><label>Kiểu</label>
+    <div class="seg" id="modes">
+      <button data-m="auto" class="act">Tự động</button>
+      <button data-m="h">Ngang</button>
+      <button data-m="v">Dọc</button>
+      <button data-m="snap">Góc 45°</button>
+    </div>
+  </div>
+
+  <div class="row"><label>Độ mượt</label>
+    <input type="range" id="sm" min="0" max="90" value="55"><span class="v" id="vsm">55</span></div>
+  <div class="row"><label>Độ nhạy khóa</label>
+    <input type="range" id="th" min="3" max="30" value="12"><span class="v" id="vth">12°</span></div>
+  <div class="row"><label>Độ dày nét</label>
+    <input type="range" id="lw" min="1" max="12" value="4"><span class="v" id="vlw">4</span></div>
+  <div class="row"><label>Hiện đường gốc</label>
+    <input type="checkbox" id="raw"></div>
+
+  </div>
+
+  <button id="clear">Xóa hết</button>
+</div>
+
+<script>
+var $=function(i){return document.getElementById(i)};
+var cv=$('c'), ctx=cv.getContext('2d'), stateEl=$('state');
+var strokes=[], cur=null, dirty=true;
+var enabled=true, mode='auto';
+var sm=0.55, th=12, lw=4, showRaw=false;
+
+function resize(){
+  var r=cv.getBoundingClientRect(), d=window.devicePixelRatio||1;
+  cv.width=Math.round(r.width*d); cv.height=Math.round(r.height*d);
+  ctx.setTransform(d,0,0,d,0,0); dirty=true;
+}
+window.addEventListener('resize',resize);
+
+function pos(e){var r=cv.getBoundingClientRect();return {x:e.clientX-r.left,y:e.clientY-r.top}}
+
+// Chiếu điểm p lên hướng góc ang (độ) xuất phát từ gốc s
+function project(s,p,ang){
+  var a=ang*Math.PI/180, ux=Math.cos(a), uy=Math.sin(a);
+  var dx=p.x-s.x, dy=p.y-s.y, t=dx*ux+dy*uy;
+  return {x:s.x+ux*t, y:s.y+uy*t};
+}
+function angDiff(a,b){var d=Math.abs(a-b)%180; return d>90?180-d:d}
+
+function apply(p){
+  var s=cur.start;
+  if(!enabled||mode==='free') {cur.locked=false; return p}
+  var dx=p.x-s.x, dy=p.y-s.y;
+  if(Math.hypot(dx,dy)<12){cur.locked=false;return p}
+  var ang=Math.atan2(dy,dx)*180/Math.PI;         // -180..180
+  var cands = mode==='h'?[0] : mode==='v'?[90] : mode==='snap'?[0,45,90,135] : [0,90];
+  var best=null, bd=999;
+  cands.forEach(function(c){var d=angDiff(ang,c); if(d<bd){bd=d;best=c}});
+  var lockAt=th, unlockAt=th*1.6;
+  if(mode==='h'||mode==='v'){ cur.locked=true; cur.axis=best; return project(s,p,best) } // ép luôn
+  if(cur.locked){ if(angDiff(ang,cur.axis)>unlockAt){cur.locked=false} }
+  else if(bd<=lockAt){ cur.locked=true; cur.axis=best }
+  return cur.locked ? project(s,p,cur.axis) : p;
+}
+
+function addPoint(raw){
+  cur.raw.push(raw);
+  if(!enabled){
+    cur.s.x=raw.x; cur.s.y=raw.y; cur.locked=false;
+    cur.out.push({x:raw.x,y:raw.y});
+    return;
+  }
+  // làm mượt (trung bình mũ)
+  cur.s.x += (raw.x-cur.s.x)*(1-sm);
+  cur.s.y += (raw.y-cur.s.y)*(1-sm);
+  cur.out.push(apply({x:cur.s.x,y:cur.s.y}));
+}
+
+cv.addEventListener('pointerdown',function(e){
+  cv.setPointerCapture(e.pointerId); e.preventDefault();
+  var p=pos(e);
+  cur={start:p, s:{x:p.x,y:p.y}, raw:[p], out:[p], locked:false, axis:0};
+  strokes.push(cur); dirty=true;
+});
+cv.addEventListener('pointermove',function(e){
+  if(!cur)return;
+  var list=(e.getCoalescedEvents&&e.getCoalescedEvents())||[];
+  if(!list.length)list=[e];
+  for(var i=0;i<list.length;i++) addPoint(pos(list[i]));
+  stateEl.textContent = cur.locked ? 'Đang khóa thẳng ✓' : 'Kéo tự do';
+  stateEl.className = cur.locked ? 'lock' : '';
+  dirty=true;
+});
+function end(){
+  if(!cur)return;
+  if(enabled && cur.raw.length>1){
+    var last=cur.raw[cur.raw.length-1];
+    cur.s.x=last.x; cur.s.y=last.y;
+    cur.out.push(apply({x:last.x,y:last.y}));
+  }
+  cur=null; stateEl.textContent='Kéo chuột để vẽ'; stateEl.className=''; dirty=true;
+}
+cv.addEventListener('pointerup',end);
+cv.addEventListener('pointercancel',end);
+
+function line(pts,color,w){
+  if(pts.length<1)return;
+  ctx.beginPath(); ctx.moveTo(pts[0].x,pts[0].y);
+  for(var i=1;i<pts.length;i++) ctx.lineTo(pts[i].x,pts[i].y);
+  ctx.strokeStyle=color; ctx.lineWidth=w; ctx.lineCap='round'; ctx.lineJoin='round'; ctx.stroke();
+}
+function draw(){
+  requestAnimationFrame(draw);
+  if(!dirty)return; dirty=false;
+  var w=cv.clientWidth,h=cv.clientHeight;
+  ctx.clearRect(0,0,w,h);
+  // lưới nhẹ
+  ctx.strokeStyle='rgba(255,255,255,.05)'; ctx.lineWidth=1;
+  for(var x=0;x<w;x+=40){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,h);ctx.stroke()}
+  for(var y=0;y<h;y+=40){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke()}
+  strokes.forEach(function(s){
+    if(showRaw) line(s.raw,'rgba(239,68,68,.6)',1.5);
+    line(s.out,'#22c55e',lw);
+  });
+}
+
+// điều khiển
+$('on').onclick=function(){
+  enabled=!enabled;
+  this.textContent='Giữ thẳng: '+(enabled?'BẬT':'TẮT');
+  this.className=enabled?'':'off';
+};
+document.querySelectorAll('#modes button').forEach(function(b){
+  b.onclick=function(){
+    mode=b.getAttribute('data-m');
+    document.querySelectorAll('#modes button').forEach(function(x){x.className=''});
+    b.className='act';
+  };
+});
+$('sm').oninput=function(){sm=this.value/100; $('vsm').textContent=this.value};
+$('th').oninput=function(){th=+this.value; $('vth').textContent=this.value+'°'};
+$('lw').oninput=function(){lw=+this.value; $('vlw').textContent=this.value; dirty=true};
+$('raw').onchange=function(){showRaw=this.checked; dirty=true};
+$('clear').onclick=function(){strokes=[];cur=null;dirty=true};
+
+$('fold').onclick=function(){
+  var o=$('opts'), hidden=o.style.display==='none';
+  o.style.display=hidden?'block':'none';
+  this.textContent=hidden?'▼ Ẩn cài đặt':'▲ Hiện cài đặt';
+  resize();
+};
+if(window.ResizeObserver){ new ResizeObserver(resize).observe($('wrap')); }
+cv.addEventListener('contextmenu',function(e){e.preventDefault()});
+
+resize(); draw();
+</script>
+</body>
+</html>
